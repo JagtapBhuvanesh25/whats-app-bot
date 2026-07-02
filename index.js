@@ -4,12 +4,14 @@ const qrcode = require("qrcode-terminal");
 const TARGET_GROUP_NAME = "Maqsad";
 const TRIGGER_TEXT = "hello";
 const REPLY_TEXT = "Hi";
+const STICKER_REPLY_TEXT = "Tejas";
 
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    protocolTimeout: 60000
   }
 });
 
@@ -29,18 +31,40 @@ async function shouldReplyToMessage(message) {
   const groupName = chat?.name ? normalizeText(chat.name) : "";
   const normalizedTarget = normalizeText(TARGET_GROUP_NAME);
   const isTargetGroup = Boolean(chat?.isGroup && groupName && groupName.includes(normalizedTarget));
-  const text = normalizeText(message.body);
-  const isHelloTrigger = text === TRIGGER_TEXT || text.startsWith(`${TRIGGER_TEXT}`);
 
   if (!isTargetGroup) {
     return { shouldReply: false, reason: "group" };
   }
 
+  const text = normalizeText(message.body);
+  const isHelloTrigger = text === TRIGGER_TEXT || text.startsWith(`${TRIGGER_TEXT}`);
+
   if (!isHelloTrigger) {
     return { shouldReply: false, reason: "text" };
   }
 
-  return { shouldReply: true, reason: "match" };
+  return { shouldReply: true, reason: "match", replyWith: REPLY_TEXT };
+}
+
+async function shouldReplyToSticker(message) {
+  if (!message || message.fromMe) return { shouldReply: false, reason: "skip" };
+
+  const chat = await message.getChat();
+  const groupName = chat?.name ? normalizeText(chat.name) : "";
+  const normalizedTarget = normalizeText(TARGET_GROUP_NAME);
+  const isTargetGroup = Boolean(chat?.isGroup && groupName && groupName.includes(normalizedTarget));
+
+  if (!isTargetGroup) {
+    return { shouldReply: false, reason: "group" };
+  }
+
+  const isSticker = message.type === "sticker";
+
+  if (!isSticker) {
+    return { shouldReply: false, reason: "not_sticker" };
+  }
+
+  return { shouldReply: true, reason: "sticker_match", replyWith: STICKER_REPLY_TEXT };
 }
 
 client.on("qr", (qr) => {
@@ -53,27 +77,45 @@ client.on("ready", () => {
 });
 
 client.on("message", async (message) => {
-  if (!message || !message.body) return;
+  if (!message) return;
+
+  // Skip system notifications and other non-user messages
+  if (message.type && ["e2e_notification", "notification_template"].includes(message.type)) {
+    return;
+  }
 
   try {
     const chat = await message.getChat();
-    const text = normalizeText(message.body);
+    const text = normalizeText(message.body || "");
 
     console.log("Chat:", message.from);
     console.log("Group:", chat?.name || "N/A");
+    console.log("Type:", message.type);
     console.log("Sender:", message.author || "Private Chat");
-    console.log("Message:", message.body);
+    console.log("Message:", message.body || "(sticker/media)");
     console.log("------------------------");
 
-    const result = await shouldReplyToMessage(message);
+    // Check for text trigger
+    let result = await shouldReplyToMessage(message);
     if (result.shouldReply) {
-      await message.reply(REPLY_TEXT);
-      console.log(`Replied: ${REPLY_TEXT}`);
-    } else {
+      await message.reply(result.replyWith);
+      console.log(`Replied: ${result.replyWith}`);
+      return;
+    }
+
+    // Check for sticker trigger
+    result = await shouldReplyToSticker(message);
+    if (result.shouldReply) {
+      await message.reply(result.replyWith);
+      console.log(`Replied: ${result.replyWith}`);
+      return;
+    }
+
+    if (result.reason !== "skip") {
       console.log(`Skip reply: ${result.reason}`);
     }
   } catch (error) {
-    console.error("Message handling error:", error);
+    console.error("Message handling error:", error.message);
   }
 });
 
@@ -86,6 +128,8 @@ module.exports = {
   TARGET_GROUP_NAME,
   TRIGGER_TEXT,
   REPLY_TEXT,
+  STICKER_REPLY_TEXT,
   shouldReplyToMessage,
+  shouldReplyToSticker,
   normalizeText
 };
